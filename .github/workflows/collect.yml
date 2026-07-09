@@ -1,0 +1,54 @@
+name: Collect Traffic Data
+
+on:
+  schedule:
+    # Run 2x daily at JST 16:37, 04:37 (all-prime cron fields to avoid congested slots)
+    - cron: "37 7,19 * * *"
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+
+# Prevent overlapping runs (cron + manual dispatch) from racing on the same
+# data file. Queue subsequent runs rather than cancelling — each tick still
+# carries fresh traffic data worth preserving.
+concurrency:
+  group: collect-traffic
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      # Third-party Actions are pinned to a full commit SHA (with the human-
+      # readable version in a trailing comment) per GitHub's supply-chain
+      # hardening guidance. Dependabot keeps the pin current via PRs — do
+      # not "clean up" the SHA back to a tag.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Collect traffic data
+        env:
+          GH_TOKEN: ${{ secrets.GH_INSIGHTS_PAT }}
+        run: bash scripts/collect.sh
+
+      - name: Generate charts
+        env:
+          GH_TOKEN: ${{ secrets.GH_INSIGHTS_PAT }}
+        run: bash scripts/generate-charts.sh
+
+      # Refresh README screenshot from the live dashboard. Soft-failure on
+      # purpose — a hiccup here must not block the daily traffic collection.
+      - name: Update screenshot
+        continue-on-error: true
+        run: |
+          npm install --no-save playwright@1.59.1
+          npx playwright install --with-deps chromium
+          node scripts/screenshot.js
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/traffic.json README.md docs/screenshot.png
+          git diff --cached --quiet || git commit -m "chore: update traffic data $(date -u +%Y-%m-%d)"
+          git push
